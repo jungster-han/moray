@@ -48,6 +48,32 @@ static Value call_builtin(Interpreter *interp, const char *name,
         if (args[0].type == VAL_FLOAT)  return args[0];
         runtime_error(interp, line, "float() requires a number"); return val_null();
     }
+    /* list methods: push, pop, len, get */
+    if (strcmp(name, "push") == 0) {
+        if (argc != 2 || args[0].type != VAL_LIST) { runtime_error(interp, line, "push(list, value)"); return val_null(); }
+        list_push(args[0].list, args[1]);
+        return val_null();
+    }
+    if (strcmp(name, "pop") == 0) {
+        if (argc != 1 || args[0].type != VAL_LIST) { runtime_error(interp, line, "pop(list)"); return val_null(); }
+        if (args[0].list->len == 0) { runtime_error(interp, line, "pop() on empty list"); return val_null(); }
+        Value v = args[0].list->data[--args[0].list->len];
+        return v;
+    }
+    if (strcmp(name, "len") == 0) {
+        if (argc != 1) { runtime_error(interp, line, "len() takes 1 argument"); return val_null(); }
+        if (args[0].type == VAL_LIST)   return val_int(args[0].list->len);
+        if (args[0].type == VAL_MAP)    return val_int(args[0].map->len);
+        if (args[0].type == VAL_STRING) return val_int((long)strlen(args[0].string));
+        runtime_error(interp, line, "len() requires a list, map, or string"); return val_null();
+    }
+    /* map methods: has */
+    if (strcmp(name, "has") == 0) {
+        if (argc != 2 || args[0].type != VAL_MAP || args[1].type != VAL_STRING) {
+            runtime_error(interp, line, "has(map, key)"); return val_null();
+        }
+        return val_bool(map_has(args[0].map, args[1].string));
+    }
     runtime_error(interp, line, "Undefined function");
     return val_null();
 }
@@ -105,10 +131,11 @@ static Value eval_expr(Interpreter *interp, Expr *e, Env *env) {
                     case VAL_BOOL:   return val_bool(left.boolean  == right.boolean);
                     case VAL_STRING: return val_bool(strcmp(left.string, right.string) == 0);
                     case VAL_NULL:   return val_bool(1);
+                    case VAL_LIST:   return val_bool(left.list == right.list);
+                    case VAL_MAP:    return val_bool(left.map  == right.map);
                 }
             }
             if (strcmp(op, "!=") == 0) {
-                Value eq = eval_expr(interp, e, env); /* reuse == logic — but simpler inline: */
                 if (left.type != right.type) return val_bool(1);
                 switch (left.type) {
                     case VAL_INT:    return val_bool(left.integer  != right.integer);
@@ -116,8 +143,9 @@ static Value eval_expr(Interpreter *interp, Expr *e, Env *env) {
                     case VAL_BOOL:   return val_bool(left.boolean  != right.boolean);
                     case VAL_STRING: return val_bool(strcmp(left.string, right.string) != 0);
                     case VAL_NULL:   return val_bool(0);
+                    case VAL_LIST:   return val_bool(left.list != right.list);
+                    case VAL_MAP:    return val_bool(left.map  != right.map);
                 }
-                (void)eq;
             }
 
             /* arithmetic — promote int to float if mixed */
@@ -193,6 +221,44 @@ static Value eval_expr(Interpreter *interp, Expr *e, Env *env) {
             }
 
             return call_builtin(interp, e->call.name, args, argc, e->line);
+        }
+
+        case EXPR_LIST: {
+            Value v = val_list_empty();
+            for (int i = 0; i < e->list.len; i++)
+                list_push(v.list, eval_expr(interp, e->list.data[i], env));
+            return v;
+        }
+
+        case EXPR_MAP: {
+            Value v = val_map_empty();
+            for (int i = 0; i < e->map.len; i++) {
+                Value key = eval_expr(interp, e->map.data[i].key, env);
+                Value val = eval_expr(interp, e->map.data[i].value, env);
+                if (key.type != VAL_STRING) {
+                    runtime_error(interp, e->line, "Map keys must be strings");
+                    return val_null();
+                }
+                map_set(v.map, key.string, val);
+            }
+            return v;
+        }
+
+        case EXPR_INDEX: {
+            Value obj = eval_expr(interp, e->index.object, env);
+            Value key = eval_expr(interp, e->index.index,  env);
+            if (obj.type == VAL_LIST) {
+                if (key.type != VAL_INT) { runtime_error(interp, e->line, "List index must be an integer"); return val_null(); }
+                return list_get(obj.list, (int)key.integer);
+            }
+            if (obj.type == VAL_MAP) {
+                if (key.type != VAL_STRING) { runtime_error(interp, e->line, "Map key must be a string"); return val_null(); }
+                Value out;
+                if (!map_get(obj.map, key.string, &out)) return val_null();
+                return out;
+            }
+            runtime_error(interp, e->line, "Cannot index into this type");
+            return val_null();
         }
     }
     return val_null();

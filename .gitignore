@@ -43,6 +43,7 @@ gmon.out
 .pixi/
 
 *.exe
+moray.exe
 
 /.claude/
 CLAUDE.local.md

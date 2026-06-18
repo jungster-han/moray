@@ -53,7 +53,9 @@ static MorayType parse_type(Parser *p) {
     if (match(p, TOK_FLOAT_TYPE))  return TYPE_FLOAT;
     if (match(p, TOK_STRING_TYPE)) return TYPE_STRING;
     if (match(p, TOK_BOOL_TYPE))   return TYPE_BOOL;
-    error(p, "Expected type (int, float, string, bool)");
+    if (match(p, TOK_LIST_TYPE))   return TYPE_LIST;
+    if (match(p, TOK_MAP_TYPE))    return TYPE_MAP;
+    error(p, "Expected type (int, float, string, bool, list, map)");
     return TYPE_INT;
 }
 
@@ -131,8 +133,50 @@ static Expr *parse_primary(Parser *p) {
         return e;
     }
 
+    /* list literal: [expr, expr, ...] */
+    if (match(p, TOK_LBRACKET)) {
+        Expr *e  = expr_alloc(EXPR_LIST, line);
+        e->list  = (vector(ExprPtr))vector_new();
+        while (!check(p, TOK_RBRACKET) && !check(p, TOK_EOF)) {
+            Expr *item = parse_expr(p);
+            vector_push(&e->list, item);
+            if (!match(p, TOK_COMMA)) break;
+        }
+        expect(p, TOK_RBRACKET, "Expected ']' after list elements");
+        return e;
+    }
+
+    /* map literal: {"key": expr, ...} */
+    if (match(p, TOK_LBRACE)) {
+        Expr *e = expr_alloc(EXPR_MAP, line);
+        e->map  = (vector(MapEntry))vector_new();
+        while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+            MapEntry entry;
+            entry.key = parse_expr(p);
+            expect(p, TOK_COLON, "Expected ':' after map key");
+            entry.value = parse_expr(p);
+            vector_push(&e->map, entry);
+            if (!match(p, TOK_COMMA)) break;
+        }
+        expect(p, TOK_RBRACE, "Expected '}' after map entries");
+        return e;
+    }
+
     error(p, "Expected an expression");
     return NULL;
+}
+
+/* wrap an expression with index operations: expr[key] */
+static Expr *parse_index(Parser *p, Expr *object) {
+    while (match(p, TOK_LBRACKET)) {
+        int line    = p->previous.line;
+        Expr *e     = expr_alloc(EXPR_INDEX, line);
+        e->index.object = object;
+        e->index.index  = parse_expr(p);
+        expect(p, TOK_RBRACKET, "Expected ']' after index");
+        object = e;
+    }
+    return object;
 }
 
 static Expr *parse_unary(Parser *p) {
@@ -149,7 +193,7 @@ static Expr *parse_unary(Parser *p) {
         e->unary.right = parse_unary(p);
         return e;
     }
-    return parse_primary(p);
+    return parse_index(p, parse_primary(p));
 }
 
 static Expr *parse_factor(Parser *p) {

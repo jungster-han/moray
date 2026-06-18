@@ -1,47 +1,58 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include "lexer.h"
 #include "parser.h"
 #include "interpreter.h"
 
-int main(void) {
-    const char *source =
-        "int x = 10\n"
-        "int y = 3\n"
-        "string greeting = \"Hello from Moray!\"\n"
-        "\n"
-        "fn add(int a, int b) {\n"
-        "    return a + b\n"
-        "}\n"
-        "\n"
-        "fn factorial(int n) {\n"
-        "    if n <= 1 {\n"
-        "        return 1\n"
-        "    }\n"
-        "    return n * factorial(n - 1)\n"
-        "}\n"
-        "\n"
-        "print(greeting)\n"
-        "print(add(x, y))\n"
-        "print(factorial(6))\n"
-        "\n"
-        "int i = 0\n"
-        "while i < 5 {\n"
-        "    print(i)\n"
-        "    i = i + 1\n"
-        "}\n";
+/* Read an entire file into a newly allocated, null-terminated buffer. */
+static char *read_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "Could not open file '%s'.\n", path);
+        return NULL;
+    }
 
-    printf("=== Running Moray ===\n\n");
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    if (size < 0) { fclose(f); return NULL; }
+    rewind(f);
+
+    char *buffer = malloc((size_t)size + 1);
+    if (!buffer) {
+        fprintf(stderr, "Not enough memory to read '%s'.\n", path);
+        fclose(f);
+        return NULL;
+    }
+
+    size_t read = fread(buffer, 1, (size_t)size, f);
+    buffer[read] = '\0';
+    fclose(f);
+    return buffer;
+}
+
+int main(int argc, char **argv) {
+    const char *path = (argc > 1) ? argv[1] : "examples/sample.my";
+
+    char *source = read_file(path);
+    if (!source) return 1;
+
+    printf("=== Running Moray (%s) ===\n\n", path);
 
     Lexer       lexer;   lexer_init(&lexer, source);
     Parser      parser;  parser_init(&parser, &lexer);
     Program     prog   = parser_parse(&parser);
 
-    if (parser.had_error) { fprintf(stderr, "Parsing failed.\n"); return 1; }
+    if (parser.had_error) {
+        fprintf(stderr, "Parsing failed.\n");
+        free(source);
+        return 1;
+    }
 
     Interpreter interp;
     interpreter_init(&interp);
     interpreter_run(&interp, &prog);
     interpreter_free(&interp);
     program_free(&prog);
+    free(source);
     return interp.had_error ? 1 : 0;
 }

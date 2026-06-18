@@ -13,6 +13,9 @@ typedef enum {
     EXPR_BINARY,    /* a + b         */
     EXPR_UNARY,     /* not x, -x     */
     EXPR_CALL,      /* add(1, 2)     */
+    EXPR_LIST,      /* [1, 2, 3]     */
+    EXPR_MAP,       /* {"a": 1}      */
+    EXPR_INDEX,     /* x[0], m["k"]  */
 } ExprKind;
 
 /* ── Statement kinds ──────────────────────────────────────────────── */
@@ -34,6 +37,8 @@ typedef enum {
     TYPE_STRING,
     TYPE_BOOL,
     TYPE_VOID,      /* for functions that don't return a value */
+    TYPE_LIST,
+    TYPE_MAP,
 } MorayType;
 
 /* forward declare so Expr and Stmt can reference each other */
@@ -51,6 +56,11 @@ typedef Expr *ExprPtr;
 typedef Stmt *StmtPtr;
 
 typedef struct {
+    Expr *key;   /* always a string expression */
+    Expr *value;
+} MapEntry;
+
+typedef struct {
     MorayType type;
     char *name;
 } Param;
@@ -58,6 +68,7 @@ typedef struct {
 vector_define(ExprPtr)
 vector_define(StmtPtr)
 vector_define(Param)
+vector_define(MapEntry)
 
 /* ── Expressions ──────────────────────────────────────────────────── */
 struct Expr {
@@ -91,6 +102,15 @@ struct Expr {
             char *name;
             vector(ExprPtr) args;
         } call;
+
+        vector(ExprPtr) list;           /* EXPR_LIST             */
+
+        vector(MapEntry) map;           /* EXPR_MAP              */
+
+        struct {                        /* EXPR_INDEX            */
+            Expr *object;               /* the list or map       */
+            Expr *index;                /* the key or position   */
+        } index;
     };
 };
 

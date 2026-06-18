@@ -1,0 +1,24 @@
+int x = 10
+int y = 3
+string greeting = "Hello from Moray!"
+
+fn add(int a, int b) {
+    return a + b
+}
+
+fn factorial(int n) {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+print(greeting)
+print(add(x, y))
+print(factorial(6))
+
+int i = 0
+while i < 5 {
+    print(i)
+    i = i + 1
+}

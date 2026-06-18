@@ -6,5 +6,10 @@ OUT    = moray
 all:
 	$(CC) $(CFLAGS) $(SRC) -o $(OUT)
 
+run: all
+	./$(OUT) $(FILE)
+
 clean:
 	rm -f $(OUT)
+
+.PHONY: all run clean

@@ -85,7 +85,6 @@ static TokenType check_keyword(const char *start, int len,
 
 static TokenType ident_type(const char *start, int len) {
     switch (start[0]) {
-        case 'a': return check_keyword(start, len, "and",    TOK_AND);
         case 'e': return check_keyword(start, len, "else",   TOK_ELSE);
         case 'b': return check_keyword(start, len, "bool",   TOK_BOOL_TYPE);
         case 'f': {
@@ -101,13 +100,10 @@ static TokenType ident_type(const char *start, int len) {
             if (len > 1 && start[1] == 'n')  return check_keyword(start, len, "int", TOK_INT_TYPE);
             break;
         }
+        case 'l': return check_keyword(start, len, "list",   TOK_LIST_TYPE);
+        case 'm': return check_keyword(start, len, "map",    TOK_MAP_TYPE);
         case 's': return check_keyword(start, len, "string", TOK_STRING_TYPE);
-        case 'n': {
-            if (len > 1 && start[1] == 'o') return check_keyword(start, len, "not", TOK_NOT);
-            if (len > 1 && start[1] == 'u') return check_keyword(start, len, "null", TOK_NULL);
-            break;
-        }
-        case 'o': return check_keyword(start, len, "or",     TOK_OR);
+        case 'n': return check_keyword(start, len, "null",   TOK_NULL);
         case 'r': return check_keyword(start, len, "return", TOK_RETURN);
         case 't': return check_keyword(start, len, "true",   TOK_TRUE);
         case 'w': return check_keyword(start, len, "while",  TOK_WHILE);
@@ -135,16 +131,23 @@ Token lexer_next(Lexer *l) {
         case '\n': l->line++; return make_token(l, TOK_NEWLINE, start);
         case '(':  return make_token(l, TOK_LPAREN,  start);
         case ')':  return make_token(l, TOK_RPAREN,  start);
-        case '{':  return make_token(l, TOK_LBRACE,  start);
-        case '}':  return make_token(l, TOK_RBRACE,  start);
-        case ',':  return make_token(l, TOK_COMMA,   start);
+        case '{':  return make_token(l, TOK_LBRACE,   start);
+        case '}':  return make_token(l, TOK_RBRACE,   start);
+        case '[':  return make_token(l, TOK_LBRACKET, start);
+        case ']':  return make_token(l, TOK_RBRACKET, start);
+        case ',':  return make_token(l, TOK_COMMA,    start);
+        case ':':  return make_token(l, TOK_COLON,    start);
         case '+':  return make_token(l, TOK_PLUS,    start);
         case '-':  return make_token(l, TOK_MINUS,   start);
         case '*':  return make_token(l, TOK_STAR,    start);
         case '/':  return make_token(l, TOK_SLASH,   start);
         case '%':  return make_token(l, TOK_PERCENT, start);
+        case '&':  return match(l,'&') ? make_token(l, TOK_AND, start)
+                                       : error_token(l, "Expected '&&' (use '&&' for logical and)");
+        case '|':  return match(l,'|') ? make_token(l, TOK_OR, start)
+                                       : error_token(l, "Expected '||' (use '||' for logical or)");
         case '=':  return make_token(l, match(l,'=') ? TOK_EQEQ  : TOK_EQ,     start);
-        case '!':  return make_token(l, match(l,'=') ? TOK_BANGEQ : TOK_BANG,   start);
+        case '!':  return make_token(l, match(l,'=') ? TOK_BANGEQ : TOK_NOT,    start);
         case '<':  return make_token(l, match(l,'=') ? TOK_LTEQ   : TOK_LT,     start);
         case '>':  return make_token(l, match(l,'=') ? TOK_GTEQ   : TOK_GT,     start);
         case '"':  return read_string(l);
@@ -165,6 +168,8 @@ const char *token_type_name(TokenType t) {
         case TOK_FLOAT_TYPE:  return "FLOAT_TYPE";
         case TOK_STRING_TYPE: return "STRING_TYPE";
         case TOK_BOOL_TYPE:   return "BOOL_TYPE";
+        case TOK_LIST_TYPE:   return "LIST_TYPE";
+        case TOK_MAP_TYPE:    return "MAP_TYPE";
         case TOK_FN:      return "FN";
         case TOK_RETURN:  return "RETURN";
         case TOK_IF:      return "IF";
@@ -180,7 +185,6 @@ const char *token_type_name(TokenType t) {
         case TOK_PERCENT: return "PERCENT";
         case TOK_EQ:      return "EQ";
         case TOK_EQEQ:    return "EQEQ";
-        case TOK_BANG:    return "BANG";
         case TOK_BANGEQ:  return "BANGEQ";
         case TOK_LT:      return "LT";
         case TOK_LTEQ:    return "LTEQ";
@@ -188,9 +192,12 @@ const char *token_type_name(TokenType t) {
         case TOK_GTEQ:    return "GTEQ";
         case TOK_LPAREN:  return "LPAREN";
         case TOK_RPAREN:  return "RPAREN";
-        case TOK_LBRACE:  return "LBRACE";
-        case TOK_RBRACE:  return "RBRACE";
-        case TOK_COMMA:   return "COMMA";
+        case TOK_LBRACE:    return "LBRACE";
+        case TOK_RBRACE:    return "RBRACE";
+        case TOK_LBRACKET:  return "LBRACKET";
+        case TOK_RBRACKET:  return "RBRACKET";
+        case TOK_COMMA:     return "COMMA";
+        case TOK_COLON:     return "COLON";
         case TOK_NEWLINE: return "NEWLINE";
         case TOK_EOF:     return "EOF";
         case TOK_ERROR:   return "ERROR";
