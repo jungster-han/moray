@@ -32,6 +32,24 @@ typedef struct MorayList   MorayList;
 typedef struct MorayMap    MorayMap;
 typedef struct MorayStruct MorayStruct;
 
+/*
+ * Garbage-collection header.
+ *
+ * Every heap-backed object (string buffer, list, map, struct) carries one of
+ * these so the collector can thread it on a single intrusive "all objects" list
+ * and mark it during a collection. The header is the FIRST member of each
+ * object type, so a GCHeader* and the object pointer are interchangeable; for
+ * strings, which have no struct, the header is allocated as a prefix in front of
+ * the character data (see gc_new_string_buffer in value.c).
+ */
+typedef enum { GC_STRING, GC_LIST, GC_MAP, GC_STRUCT } GCKind;
+
+typedef struct GCHeader {
+    struct GCHeader *next;   /* next object in the global all-objects list */
+    unsigned char    kind;   /* GCKind: how to mark/free this object        */
+    unsigned char    mark;   /* set during the mark phase, cleared on sweep */
+} GCHeader;
+
 struct Value {
     ValueType type;
     union {
@@ -47,6 +65,7 @@ struct Value {
 
 /* Heap-allocated list shared by reference */
 struct MorayList {
+    GCHeader gc;   /* must stay first — see GCHeader */
     Value *data;
     int    len;
     int    cap;
@@ -59,6 +78,7 @@ typedef struct {
 } MapPair;
 
 struct MorayMap {
+    GCHeader gc;   /* must stay first — see GCHeader */
     MapPair *pairs;
     int      len;
     int      cap;
@@ -70,6 +90,7 @@ struct MorayMap {
  * dispatch and type() reporting. Shared by reference, like lists and maps.
  */
 struct MorayStruct {
+    GCHeader  gc;          /* must stay first — see GCHeader */
     char     *type_name;   /* heap-allocated */
     MorayMap *fields;      /* name -> Value */
 };
@@ -102,5 +123,40 @@ int   struct_has(MorayStruct *s, const char *field);
 void        value_free(Value v);
 void        value_print(Value v);
 const char *value_type_name(ValueType t);
+
+/* ── Garbage collector ────────────────────────────────────────────────
+ *
+ * Moray reclaims memory with a mark-and-sweep collector. Heap objects are
+ * shared by handle (a Value is a shallow copy), so ownership cannot be pinned
+ * to any single binding; instead the collector traces every object reachable
+ * from a root and frees the rest. A collection is triggered when a scope is
+ * discarded (env_free) — i.e. exactly when resources go away.
+ *
+ * Roots are:
+ *   - every live environment's variables (registered by env_new/env_free), and
+ *   - the "protect" stack below, which guards values that are in flight on the
+ *     C stack and not yet reachable from any environment (function return
+ *     values, evaluated call arguments, containers under construction).
+ */
+
+/* Allocate a GC-tracked, zeroed char buffer of `nbytes`. Used for every
+   VAL_STRING payload so the collector can trace and free strings uniformly. */
+char *gc_new_string_buffer(size_t nbytes);
+
+/* Mark one value and everything transitively reachable from it. */
+void  gc_mark_value(Value v);
+
+/* Protect stack: pin in-flight temporaries across a possible collection.
+   gc_protect returns the value for convenient inline use; gc_pop removes the
+   most recently protected `n` entries. Always balance them. */
+Value gc_protect(Value v);
+void  gc_pop(int n);
+
+/* Run a collection now (sweeps everything unreachable from the roots). */
+void  gc_collect(void);
+
+/* Called by env_free when a scope is discarded: collects if enough has been
+   allocated since the last collection to make it worthwhile. */
+void  gc_maybe_collect(void);
 
 #endif

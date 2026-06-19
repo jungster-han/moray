@@ -32,6 +32,7 @@ print(factorial(6))   # 720
   - [Structs & interfaces](#structs--interfaces)
   - [Truthiness](#truthiness)
   - [Scope](#scope)
+  - [Memory management](#memory-management)
 - [Built-in functions](#built-in-functions)
 - [Grammar reference](#grammar-reference)
 - [Language limitations](#language-limitations)
@@ -349,6 +350,39 @@ Rules the interpreter enforces:
   see globals and their own parameters/locals, but **not** the locals of the
   caller (there are no closures).
 
+### Memory management
+
+Memory is **automatic** — Moray has a garbage collector, so you never free
+anything by hand. Heap values (strings, lists, maps, and structs) are reclaimed
+once they are no longer reachable.
+
+```my
+fn build() {
+    list temp = [1, 2, 3]   # allocated here
+    return temp[0]
+}                           # `temp` is unreachable after the call → collected
+
+int i = 0
+while i < 1000000 {
+    list scratch = [i, i * i]   # a million short-lived lists…
+    i = i + 1
+}                               # …reclaimed as the loop runs; memory stays flat
+```
+
+How it works, briefly:
+
+- Heap values are **reference types** shared by handle (see
+  [Value vs. reference](#types)), so the collector tracks reachability rather
+  than tying each object to one variable.
+- It is a **mark-and-sweep** collector: a collection traces every value
+  reachable from a live scope, then frees the rest. Reference cycles (a list or
+  struct that refers back to itself) are reclaimed correctly.
+- Collections run **when a scope is discarded** — i.e. when a block, function,
+  or method call ends — so memory is reclaimed during execution, not just at
+  program exit.
+
+This is transparent to programs: there is no syntax for it and nothing to call.
+
 ---
 
 ## Built-in functions
@@ -455,8 +489,6 @@ Moray is intentionally minimal. Things it does **not** have (yet):
   fields/parameters (fixed buffers).
 - Declared types are not statically enforced at runtime (annotations are
   documentation; values are dynamically typed).
-- No garbage collection — heap values are reclaimed by the OS at exit, not
-  during execution.
 
 ---
 
@@ -468,10 +500,11 @@ Moray is intentionally minimal. Things it does **not** have (yet):
 | `src/parser.*`        | Recursive-descent parser → AST.                      |
 | `src/ast.*`           | AST node definitions and allocation helpers.         |
 | `src/interpreter.*`   | Tree-walking evaluator and built-in functions.       |
-| `src/value.*`         | The runtime `Value` tagged union.                    |
-| `src/env.*`           | Lexically-scoped variable environments.              |
+| `src/value.*`         | The runtime `Value` tagged union and the mark-and-sweep garbage collector. |
+| `src/env.*`           | Lexically-scoped variable environments; GC root set. |
 | `src/vec.h`           | Tiny generic growable-vector macro.                  |
 | `src/main.c`          | Entry point: reads a `.my` file and runs it.         |
 | `examples/sample.my`  | Primitives, lists, and maps.                         |
 | `examples/shapes.my`  | Structs, methods, and interfaces.                    |
+| `examples/gc_stress.my` | Exercises the garbage collector under heavy churn. |
 ```

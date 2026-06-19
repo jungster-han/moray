@@ -78,12 +78,21 @@ static int bind_args(Interpreter *interp, vector(Arg) args, Env *env,
     if (slot_count > 64) { runtime_error(interp, line, "Too many parameters or fields"); return 0; }
     for (int i = 0; i < slot_count; i++) out[i] = val_null();
 
+    /*
+     * Each evaluated argument is pinned on the GC protect stack as we go: a
+     * later argument's evaluation may run code that triggers a collection, and
+     * the arguments filled so far are not yet reachable from any scope. The
+     * caller stores them into a fresh environment (or struct) without any
+     * intervening collection, so we release them here before returning.
+     */
     int pi = 0;
+    int pinned = 0;
     for (int i = 0; i < args.len; i++) {
         Arg a = args.data[i];
         if (a.name == NULL) {                       /* positional */
-            if (pi >= slot_count) { runtime_error(interp, line, "Too many arguments"); return 0; }
-            out[pi] = eval_expr(interp, a.value, env);
+            if (pi >= slot_count) { runtime_error(interp, line, "Too many arguments"); gc_pop(pinned); return 0; }
+            out[pi] = gc_protect(eval_expr(interp, a.value, env));
+            pinned++;
             filled[pi++] = 1;
         } else {                                    /* named */
             int j = -1;
@@ -92,17 +101,19 @@ static int bind_args(Interpreter *interp, vector(Arg) args, Env *env,
             if (j < 0) {
                 runtime_error(interp, line, "No parameter or field with that name");
                 fprintf(stderr, "  '%s'\n", a.name);
-                return 0;
+                gc_pop(pinned); return 0;
             }
             if (filled[j]) {
                 runtime_error(interp, line, "Argument given twice");
                 fprintf(stderr, "  '%s'\n", a.name);
-                return 0;
+                gc_pop(pinned); return 0;
             }
-            out[j] = eval_expr(interp, a.value, env);
+            out[j] = gc_protect(eval_expr(interp, a.value, env));
+            pinned++;
             filled[j] = 1;
         }
     }
+    gc_pop(pinned);
     return 1;
 }
 
@@ -203,8 +214,12 @@ static Value eval_expr(Interpreter *interp, Expr *e, Env *env) {
         }
 
         case EXPR_BINARY: {
-            Value left  = eval_expr(interp, e->binary.left,  env);
+            /* Pin the left operand across the right's evaluation: if it is a
+               fresh heap temporary (e.g. a string from a nested concat) a
+               collection during the right side would otherwise free it. */
+            Value left  = gc_protect(eval_expr(interp, e->binary.left, env));
             Value right = eval_expr(interp, e->binary.right, env);
+            gc_pop(1);
             const char *op = e->binary.op;
 
             /* logical */
@@ -267,7 +282,7 @@ static Value eval_expr(Interpreter *interp, Expr *e, Env *env) {
             /* string concatenation */
             if (strcmp(op, "+") == 0 && left.type == VAL_STRING && right.type == VAL_STRING) {
                 int  len = strlen(left.string) + strlen(right.string);
-                char *s  = malloc(len + 1);
+                char *s  = gc_new_string_buffer(len + 1);
                 strcpy(s, left.string);
                 strcat(s, right.string);
                 Value v = (Value){ VAL_STRING, .string = s };
@@ -311,9 +326,12 @@ static Value eval_expr(Interpreter *interp, Expr *e, Env *env) {
                 Env *fn_env = env_new(interp->globals);
                 for (int i = 0; i < n; i++) env_define(fn_env, names[i], vals[i]);
                 exec_stmt(interp, fn_stmt->fn_def.body, fn_env);
-                Value ret = g_returning ? g_return_val : val_null();
+                int   returned = g_returning;
+                Value ret      = returned ? g_return_val : val_null();
                 g_returning = 0;
-                env_free(fn_env);
+                env_free(fn_env);                 /* may collect; the return value is
+                                                     pinned by STMT_RETURN's protect */
+                if (returned) gc_pop(1);          /* release that protection         */
                 return ret;
             }
 
@@ -321,40 +339,52 @@ static Value eval_expr(Interpreter *interp, Expr *e, Env *env) {
             int argc = e->call.args.len;
             if (argc > 64) { runtime_error(interp, e->line, "Too many arguments"); return val_null(); }
             Value args[64];
+            int   pinned = 0;
             for (int i = 0; i < argc; i++) {
                 if (e->call.args.data[i].name != NULL) {
                     runtime_error(interp, e->line, "Built-in functions do not take named arguments");
+                    gc_pop(pinned);
                     return val_null();
                 }
-                args[i] = eval_expr(interp, e->call.args.data[i].value, env);
+                args[i] = gc_protect(eval_expr(interp, e->call.args.data[i].value, env));
+                pinned++;
             }
-            return call_builtin(interp, e->call.name, args, argc, e->line);
+            Value r = call_builtin(interp, e->call.name, args, argc, e->line);
+            gc_pop(pinned);
+            return r;
         }
 
         case EXPR_LIST: {
-            Value v = val_list_empty();
+            /* Pin the list while building it: evaluating elements may collect,
+               and the half-built list (and what it already holds) must survive. */
+            Value v = gc_protect(val_list_empty());
             for (int i = 0; i < e->list.len; i++)
                 list_push(v.list, eval_expr(interp, e->list.data[i], env));
+            gc_pop(1);
             return v;
         }
 
         case EXPR_MAP: {
-            Value v = val_map_empty();
+            Value v = gc_protect(val_map_empty());
             for (int i = 0; i < e->map.len; i++) {
-                Value key = eval_expr(interp, e->map.data[i].key, env);
+                Value key = gc_protect(eval_expr(interp, e->map.data[i].key, env));
                 Value val = eval_expr(interp, e->map.data[i].value, env);
                 if (key.type != VAL_STRING) {
                     runtime_error(interp, e->line, "Map keys must be strings");
+                    gc_pop(2);   /* key + v */
                     return val_null();
                 }
                 map_set(v.map, key.string, val);
+                gc_pop(1);       /* key (val is now reachable through v) */
             }
+            gc_pop(1);           /* v */
             return v;
         }
 
         case EXPR_INDEX: {
-            Value obj = eval_expr(interp, e->index.object, env);
+            Value obj = gc_protect(eval_expr(interp, e->index.object, env));
             Value key = eval_expr(interp, e->index.index,  env);
+            gc_pop(1);
             if (obj.type == VAL_LIST) {
                 if (key.type != VAL_INT) { runtime_error(interp, e->line, "List index must be an integer"); return val_null(); }
                 return list_get(obj.list, (int)key.integer);
@@ -406,16 +436,24 @@ static Value eval_expr(Interpreter *interp, Expr *e, Env *env) {
             const char *names[64];
             for (int i = 0; i < nslots; i++) names[i] = m->fn_def.params.data[i + 1].name;
             Value vals[64];
-            if (!bind_args(interp, e->method.args, env, names, nslots, vals, e->line))
+            /* Keep the receiver alive across argument evaluation; it becomes a
+               root once bound as `self`. */
+            gc_protect(obj);
+            if (!bind_args(interp, e->method.args, env, names, nslots, vals, e->line)) {
+                gc_pop(1);
                 return val_null();
+            }
 
             Env *fn_env = env_new(interp->globals);
             if (has_self) env_define(fn_env, m->fn_def.params.data[0].name, obj);
+            gc_pop(1);   /* obj now reachable via fn_env (or no longer needed) */
             for (int i = 0; i < nslots; i++) env_define(fn_env, names[i], vals[i]);
             exec_stmt(interp, m->fn_def.body, fn_env);
-            Value ret = g_returning ? g_return_val : val_null();
+            int   returned = g_returning;
+            Value ret      = returned ? g_return_val : val_null();
             g_returning = 0;
             env_free(fn_env);
+            if (returned) gc_pop(1);
             return ret;
         }
     }
@@ -480,6 +518,11 @@ static void exec_stmt(Interpreter *interp, Stmt *s, Env *env) {
             g_return_val = s->ret.value
                 ? eval_expr(interp, s->ret.value, env)
                 : val_null();
+            /* Pin the return value: scope teardown as the stack unwinds back to
+               the call site will trigger collections, and nothing else may
+               reach this value yet. The call site (EXPR_CALL/EXPR_METHOD)
+               releases it once it has been received. */
+            gc_protect(g_return_val);
             g_returning = 1;
             break;
 
@@ -487,11 +530,10 @@ static void exec_stmt(Interpreter *interp, Stmt *s, Env *env) {
             /*
              * Store a pointer to the Stmt itself as the function's value.
              * We pack the pointer into a string-sized buffer — a simple trick
-             * to avoid adding a new VAL_FUNCTION type for now.
+             * to avoid adding a new VAL_FUNCTION type for now. The buffer is
+             * GC-tracked like any string so the collector can trace and free it.
              */
-            char buf[sizeof(Stmt *)];
-            memcpy(buf, &s, sizeof(Stmt *));
-            Value fn = (Value){ VAL_STRING, .string = malloc(sizeof(Stmt *)) };
+            Value fn = (Value){ VAL_STRING, .string = gc_new_string_buffer(sizeof(Stmt *)) };
             memcpy(fn.string, &s, sizeof(Stmt *));
             env_define(interp->globals, s->fn_def.name, fn);
             break;
@@ -508,7 +550,9 @@ static void exec_stmt(Interpreter *interp, Stmt *s, Env *env) {
                 fprintf(stderr, "  '%s' on '%s'\n", s->field_assign.name, obj.strukt->type_name);
                 break;
             }
+            gc_protect(obj);
             Value v = eval_expr(interp, s->field_assign.value, env);
+            gc_pop(1);
             struct_set(obj.strukt, s->field_assign.name, v);
             break;
         }
@@ -600,6 +644,9 @@ void interpreter_init(Interpreter *interp) {
 
 void interpreter_free(Interpreter *interp) {
     env_free(interp->globals);
+    /* All scopes are gone now; a final collection reclaims every remaining
+       object regardless of the allocation threshold. */
+    gc_collect();
 }
 
 void interpreter_run(Interpreter *interp, Program *prog) {
